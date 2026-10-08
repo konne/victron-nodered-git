@@ -55,5 +55,7 @@ echo "Files updated."
 # 2. Run setup
 # ---------------------------------------------------------------------------
 echo ""
-echo "Running setup.sh ..."
-sh "${INSTALL_DIR}/setup.sh"
+echo "Running setup.sh and applying settings to the running Node-RED service..."
+# Node-RED may have disabled Projects before an earlier run installed Git.
+# Files being unchanged does not mean the running process has loaded them.
+sh "${INSTALL_DIR}/setup.sh" --restart

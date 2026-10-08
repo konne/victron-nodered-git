@@ -41,11 +41,11 @@ sh /data/victron-nodered-git/setup.sh
 2. **Removes signalk-server** (`/usr/lib/node_modules/signalk-server/`) if present — this frees several hundred MB needed for git.
 3. **Installs git** via `opkg update && opkg install git` — skipped if git is already present.
 4. **Patches settings-user.js** — adds or updates the `editorTheme.projects` block to enable projects with `workflow.mode = "manual"`. Existing JavaScript, comments, functions, and relative imports are preserved. Changed files are backed up as `settings-user.js.backup-<timestamp>` before an override is appended; existing workflow choices are retained.
-5. **Restarts Node-RED only when needed** — through its supervisor, with a process fallback, when Git was installed or settings changed.
+5. **Applies changes to Node-RED** — through its supervisor, with a process fallback, when Git was installed, settings changed, or `--restart` was requested. The installer always requests a restart so it also repairs a running instance that disabled Projects before Git became available.
 
 ## After install
 
-`setup.sh` requests a Node-RED restart only when Git or settings changed. No device reboot is issued. Repeated setup with no changes leaves Node-RED running.
+The installer requests a Node-RED restart to load Git and the Projects settings. No device reboot is issued. Direct setup and boot runs leave Node-RED running when nothing changed, unless `--restart` is supplied.
 
 Open the Node-RED editor. You will see a **Projects** panel in the sidebar. Use it to clone your flow repository or create a new project.
 
@@ -96,7 +96,13 @@ sh /data/victron-nodered-git/setup.sh
 
 **git not found after firmware update:** Inspect `setup.log` first. Each run records boot mode, boot ID when available, and exit status. If a download failed, connect to the internet and re-run setup or reboot. If the hook did not run, check `ls -l /data/rc.local` and Settings → General → Modification checks → Modifications enabled. Firmware updates already include a reboot.
 
-**Node-RED Projects panel not visible:** Confirm `settings-user.js` contains `editorTheme.projects.enabled = true`, then restart Node-RED with `svc -t /service/nodered`.
+**Node-RED Projects panel not visible, or an empty default flow appears:** Check `/var/log/node-red-venus/current` for `Projects disabled : git command not found`. Node-RED checks Git at startup; installing Git later does not enable Projects in the already-running process. Confirm `settings-user.js` enables Projects, then run:
+
+```sh
+sh /data/victron-nodered-git/setup.sh --restart
+```
+
+The Venus OS supervisor service is `/service/node-red-venus` (older layouts using `/service/nodered` are also supported). For a direct restart use `svc -t /service/node-red-venus`, wait for startup, and reload the editor. Inspect the startup log to confirm which project/flow file was loaded; do not deploy an empty fallback flow over your existing project.
 
 ## Permissions and local verification
 

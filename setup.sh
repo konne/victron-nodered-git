@@ -9,7 +9,14 @@ SETUP_SCRIPT="${SCRIPT_DIR}/setup.sh"
 MARKER="victron-nodered-git"
 LOG="${SCRIPT_DIR}/setup.log"
 BOOT_MODE=false
-[ "${1:-}" = "--boot" ] && BOOT_MODE=true
+FORCE_RESTART=false
+for option in "$@"; do
+    case "$option" in
+        --boot) BOOT_MODE=true ;;
+        --restart) FORCE_RESTART=true ;;
+        *) echo "Usage: $0 [--boot] [--restart]" >&2; exit 2 ;;
+    esac
+done
 
 if ! $BOOT_MODE; then
     echo "Running setup; output is recorded in $LOG"
@@ -40,7 +47,7 @@ else
     echo "signalk-server not present, skipping."
 fi
 
-RESTART_NEEDED=false
+RESTART_NEEDED=$FORCE_RESTART
 if command -v git > /dev/null 2>&1; then
     echo "git already installed: $(git --version)"
 else
@@ -59,9 +66,16 @@ if [ "$(printf '%s\n' "$PATCH_RESULT" | tail -n 1)" = "changed" ]; then
 fi
 
 if $RESTART_NEEDED; then
-    if [ -d /service/nodered ] && command -v svc >/dev/null 2>&1; then
-        echo "Restarting Node-RED through its service supervisor..."
-        svc -t /service/nodered
+    NR_SERVICE=""
+    for candidate in /service/node-red-venus /service/nodered; do
+        if [ -d "$candidate" ]; then
+            NR_SERVICE="$candidate"
+            break
+        fi
+    done
+    if [ -n "$NR_SERVICE" ] && command -v svc >/dev/null 2>&1; then
+        echo "Restarting Node-RED through $NR_SERVICE..."
+        svc -t "$NR_SERVICE"
     else
         NR_PID="$(pgrep -f 'node-red|node_modules/.bin/node-red' | head -n 1)"
         if [ -n "$NR_PID" ]; then
