@@ -1,31 +1,36 @@
 #!/bin/sh
-# setup.sh – idempotent setup for victron-nodered-git.
-#
-# Run directly:
-#   sh /data/victron-nodered-git/setup.sh
-#
-# Steps:
-#   1. Remove signalk-server to free space (skipped if already absent)
-#   2. Install git via opkg (skipped if already installed)
-#   3. Enable Node-RED projects in settings-user.js (idempotent)
-#   4. Register in /data/rc.local so setup re-runs after firmware updates
-
+# Install Git and enable Node-RED Projects, including after firmware updates.
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETTINGS_FILE="/data/home/nodered/.node-red/settings-user.js"
 RC_LOCAL="/data/rc.local"
-SETUP_SCRIPT="/data/victron-nodered-git/setup.sh"
-LOG="/data/victron-nodered-git/setup.log"
+SETUP_SCRIPT="${SCRIPT_DIR}/setup.sh"
+MARKER="victron-nodered-git"
+LOG="${SCRIPT_DIR}/setup.log"
+BOOT_MODE=false
+[ "${1:-}" = "--boot" ] && BOOT_MODE=true
 
-mkdir -p "$(dirname "$LOG")"
+if ! $BOOT_MODE; then
+    echo "Running setup; output is recorded in $LOG"
+fi
 exec >> "$LOG" 2>&1
+trap 'result=$?; echo "Setup finished with exit code $result"' 0
 echo ""
 echo "=== $(date) ==="
-echo "Starting victron-nodered-git setup..."
+echo "Starting victron-nodered-git setup (boot=$BOOT_MODE, pid=$$)..."
+if [ -r /proc/sys/kernel/random/boot_id ]; then
+    echo "Boot ID: $(cat /proc/sys/kernel/random/boot_id)"
+fi
 
-# ---------------------------------------------------------------------------
-# 1. Remove signalk-server to free space
-# ---------------------------------------------------------------------------
+. "${SCRIPT_DIR}/boot-common.sh"
+# Register before any operation that needs rootfs write access or internet.
+# Boot runs leave the shared hook alone; installation updates it sequentially.
+if ! $BOOT_MODE; then
+    register_boot_hook
+fi
+prepare_rootfs
+
 SIGNALK_DIR="/usr/lib/node_modules/signalk-server"
 if [ -d "$SIGNALK_DIR" ]; then
     echo "Removing signalk-server..."
@@ -35,9 +40,7 @@ else
     echo "signalk-server not present, skipping."
 fi
 
-# ---------------------------------------------------------------------------
-# 2. Install git
-# ---------------------------------------------------------------------------
+RESTART_NEEDED=false
 if command -v git > /dev/null 2>&1; then
     echo "git already installed: $(git --version)"
 else
@@ -45,125 +48,30 @@ else
     opkg update
     opkg install git
     echo "git installed: $(git --version)"
+    RESTART_NEEDED=true
 fi
 
-# ---------------------------------------------------------------------------
-# 3. Enable Node-RED projects in settings-user.js
-# ---------------------------------------------------------------------------
-patch_settings() {
-    node - "$SETTINGS_FILE" << 'EOF'
-const fs   = require('fs');
-const path = process.argv[2];
-
-if (!fs.existsSync(path)) {
-    console.error('settings-user.js not found at: ' + path);
-    process.exit(1);
-}
-
-// Read the file and evaluate it to get the exported object.
-// We use a sandboxed require so module.exports is captured.
-const Module = require('module');
-const src = fs.readFileSync(path, 'utf8');
-
-// Evaluate in a temporary module context.
-const m = new Module(path);
-m.filename = path;
-m._compile(src, path);
-const cfg = m.exports;
-
-// Ensure the nested structure exists.
-if (!cfg.editorTheme) cfg.editorTheme = {};
-if (!cfg.editorTheme.projects) cfg.editorTheme.projects = {};
-
-const projects = cfg.editorTheme.projects;
-
-let changed = false;
-
-if (projects.enabled !== true) {
-    projects.enabled = true;
-    changed = true;
-}
-
-if (!projects.workflow) {
-    projects.workflow = { mode: 'manual' };
-    changed = true;
-} else if (!projects.workflow.mode) {
-    projects.workflow.mode = 'manual';
-    changed = true;
-}
-
-if (!changed) {
-    console.log('settings-user.js already has projects enabled, no changes needed.');
-    process.exit(0);
-}
-
-const out = 'module.exports = ' + JSON.stringify(cfg, null, 4) + ';\n';
-fs.writeFileSync(path, out, 'utf8');
-console.log('settings-user.js updated: projects enabled.');
-EOF
-}
-
-if [ -f "$SETTINGS_FILE" ]; then
-    echo "Patching $SETTINGS_FILE ..."
-    patch_settings
-else
-    echo "settings-user.js not found at $SETTINGS_FILE"
-    echo "Creating it with projects enabled..."
-    mkdir -p "$(dirname "$SETTINGS_FILE")"
-    cat > "$SETTINGS_FILE" << 'SETTINGS'
-module.exports = {
-    editorTheme: {
-        projects: {
-            /** To enable the Projects feature, set this value to true */
-            enabled: true,
-            workflow: {
-                /** Set the default projects workflow mode.
-                 *  - manual - you must manually commit changes
-                 *  - auto   - changes are automatically committed
-                 */
-                mode: "manual"
-            }
-        }
-    }
-};
-SETTINGS
-    echo "settings-user.js created."
+echo "Checking Node-RED Projects settings..."
+PATCH_RESULT="$(node "${SCRIPT_DIR}/enable-projects.js" "$SETTINGS_FILE")"
+echo "$PATCH_RESULT"
+if [ "$(printf '%s\n' "$PATCH_RESULT" | tail -n 1)" = "changed" ]; then
+    RESTART_NEEDED=true
 fi
 
-# ---------------------------------------------------------------------------
-# 4. Register in /data/rc.local for firmware-update survival
-# ---------------------------------------------------------------------------
-MARKER="victron-nodered-git"
-if [ -f "$RC_LOCAL" ] && grep -q "$MARKER" "$RC_LOCAL"; then
-    echo "rc.local already contains victron-nodered-git entry."
-else
-    echo "Registering setup.sh in $RC_LOCAL ..."
-    # Ensure rc.local exists and is executable.
-    if [ ! -f "$RC_LOCAL" ]; then
-        printf '#!/bin/sh\n' > "$RC_LOCAL"
-        chmod +x "$RC_LOCAL"
-    fi
-    # Append before any trailing 'exit 0', or at end of file.
-    if grep -q '^exit 0' "$RC_LOCAL"; then
-        # Insert before the last exit 0.
-        sed -i '/^exit 0/i # '"$MARKER"'\nsh '"$SETUP_SCRIPT"' &' "$RC_LOCAL"
+if $RESTART_NEEDED; then
+    if [ -d /service/nodered ] && command -v svc >/dev/null 2>&1; then
+        echo "Restarting Node-RED through its service supervisor..."
+        svc -t /service/nodered
     else
-        printf '\n# %s\nsh %s &\n' "$MARKER" "$SETUP_SCRIPT" >> "$RC_LOCAL"
+        NR_PID="$(pgrep -f 'node-red|node_modules/.bin/node-red' | head -n 1)"
+        if [ -n "$NR_PID" ]; then
+            echo "Restarting Node-RED (pid $NR_PID)..."
+            kill "$NR_PID"
+        else
+            echo "Node-RED is not running; it will read the settings when started."
+        fi
     fi
-    echo "rc.local updated."
-fi
-
-echo ""
-echo "Setup complete."
-echo ""
-
-# Restart Node-RED by killing the process – VenusOS will restart it automatically.
-NR_PID="$(pgrep -f 'node-red\|node_modules/.bin/node-red' | head -1)"
-if [ -n "$NR_PID" ]; then
-    echo "Restarting Node-RED (pid $NR_PID)..."
-    kill "$NR_PID"
-    echo "Node-RED killed. VenusOS will restart it."
 else
-    echo "Node-RED process not found, skipping restart."
+    echo "Git and settings unchanged; no Node-RED restart needed."
 fi
-echo ""
+echo "Setup complete."

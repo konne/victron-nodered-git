@@ -45,7 +45,8 @@ done
 
 rm -rf "$TMP_EXTRACT"
 
-chmod +x "${INSTALL_DIR}/setup.sh" \
+chmod +x "${INSTALL_DIR}/install.sh" \
+         "${INSTALL_DIR}/setup.sh" \
          "${INSTALL_DIR}/uninstall.sh"
 
 echo "Files updated."
