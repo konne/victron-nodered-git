@@ -14,7 +14,7 @@ Victron firmware updates wipe `/usr/bin` and `/etc/init.d` but leave `/data` int
 
 1. `setup.sh` registers itself in `/data/rc.local` on first install.
 2. On every boot, `rc.local` starts `setup.sh --boot` in the background. Setup remounts the root filesystem read/write when needed, removes Signal K, re-installs Git if missing, and checks Node-RED settings.
-3. Firmware updates already reboot the device. Recovery needs internet when Git must be downloaded; there is no package cache or automatic retry loop.
+3. Firmware updates already reboot the device. Recovery needs internet when Git must be downloaded; there is no package cache. Boot setup retries failed attempts after 10, 20, 40, 80, and 160 seconds, then every 300 seconds until successful. A per-module lock prevents overlapping setup runs.
 4. The `settings-user.js` patch is idempotent — existing settings are preserved, only the `editorTheme.projects` section is added or updated.
 
 ## Installation
@@ -94,7 +94,7 @@ cat /data/victron-nodered-git/setup.log
 sh /data/victron-nodered-git/setup.sh
 ```
 
-**git not found after firmware update:** Inspect `setup.log` first. Each run records boot mode, boot ID when available, and exit status. If a download failed, connect to the internet and re-run setup or reboot. If the hook did not run, check `ls -l /data/rc.local` and Settings → General → Modification checks → Modifications enabled. Firmware updates already include a reboot.
+**git not found after firmware update:** Inspect `setup.log` first. Each run records boot mode, boot ID when available, and exit status. If a download failed, restore internet connectivity; boot recovery retries automatically. Check for `Boot recovery completed` in the log. Manual setup remains a single attempt. If the hook did not run, check `ls -l /data/rc.local` and Settings → General → Modification checks → Modifications enabled. Firmware updates already include a reboot.
 
 **Node-RED Projects panel not visible, or an empty default flow appears:** Check `/var/log/node-red-venus/current` for `Projects disabled : git command not found`. Node-RED checks Git at startup; installing Git later does not enable Projects in the already-running process. Confirm `settings-user.js` enables Projects, then run:
 
@@ -106,7 +106,7 @@ The Venus OS supervisor service is `/service/node-red-venus` (older layouts usin
 
 ## Permissions and local verification
 
-`install.sh`, `setup.sh`, and `uninstall.sh` are executable in the repository and installer. Helpers are loaded by the scripts. You can also explicitly run setup with `sh`.
+`install.sh`, `setup.sh`, and `uninstall.sh` are executable in the repository and installer. Helpers are loaded by the scripts. Setup uses the firmware-provided `flock` command and a lock in `/run`; locks are released automatically when the process exits or the device reboots. Internal `--boot-once` workers run under the boot runner’s lock. A `restart-pending` marker preserves the need to restart Node-RED if installation succeeded but a later setup step failed. You can also explicitly run setup with `sh`.
 
 Run the isolated regression checks on a development machine with Python 3 and Node.js:
 
@@ -115,3 +115,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 The checks use temporary files and mocked system commands; they do not reboot or alter a GX device. Verify on-device recovery with a controlled reboot after installation.
+
+## Verified recovery
+
+The 2026-11-12 Ekrano/Venus OS v3.85 test covered a reboot with both binaries missing and a subsequent normal reboot. See the [live verification record](docs/boot-verification-2026-11-12.md) for observed retries, service checks, and limitations.

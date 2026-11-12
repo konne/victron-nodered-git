@@ -9,10 +9,12 @@ SETUP_SCRIPT="${SCRIPT_DIR}/setup.sh"
 MARKER="victron-nodered-git"
 LOG="${SCRIPT_DIR}/setup.log"
 BOOT_MODE=false
+BOOT_ONCE=false
 FORCE_RESTART=false
 for option in "$@"; do
     case "$option" in
         --boot) BOOT_MODE=true ;;
+        --boot-once) BOOT_MODE=true; BOOT_ONCE=true ;;
         --restart) FORCE_RESTART=true ;;
         *) echo "Usage: $0 [--boot] [--restart]" >&2; exit 2 ;;
     esac
@@ -31,6 +33,13 @@ if [ -r /proc/sys/kernel/random/boot_id ]; then
 fi
 
 . "${SCRIPT_DIR}/boot-common.sh"
+if ! $BOOT_ONCE; then
+    acquire_setup_lock
+    if $BOOT_MODE; then
+        run_boot_setup "$@"
+        exit 0
+    fi
+fi
 # Register before any operation that needs rootfs write access or internet.
 # Boot runs leave the shared hook alone; installation updates it sequentially.
 if ! $BOOT_MODE; then
@@ -48,13 +57,17 @@ else
 fi
 
 RESTART_NEEDED=$FORCE_RESTART
-if command -v git > /dev/null 2>&1; then
+RESTART_PENDING="${SCRIPT_DIR}/restart-pending"
+[ ! -f "$RESTART_PENDING" ] || RESTART_NEEDED=true
+if git --version > /dev/null 2>&1; then
     echo "git already installed: $(git --version)"
 else
     echo "Installing git via opkg..."
+    touch "$RESTART_PENDING"
     opkg update
     opkg install git
-    echo "git installed: $(git --version)"
+    git --version
+    echo "git installed."
     RESTART_NEEDED=true
 fi
 
@@ -66,6 +79,7 @@ if [ "$(printf '%s\n' "$PATCH_RESULT" | tail -n 1)" = "changed" ]; then
 fi
 
 if $RESTART_NEEDED; then
+    touch "$RESTART_PENDING"
     NR_SERVICE=""
     for candidate in /service/node-red-venus /service/nodered; do
         if [ -d "$candidate" ]; then
@@ -85,6 +99,7 @@ if $RESTART_NEEDED; then
             echo "Node-RED is not running; it will read the settings when started."
         fi
     fi
+    rm -f "$RESTART_PENDING"
 else
     echo "Git and settings unchanged; no Node-RED restart needed."
 fi

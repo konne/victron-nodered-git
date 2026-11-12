@@ -24,7 +24,7 @@ class RestartTests(unittest.TestCase):
         script = script.replace('/service/node-red-venus', str(self.venus))
         script = script.replace('/service/nodered', str(self.service / 'nodered'))
         (self.base / 'setup.sh').write_text(script)
-        (self.base / 'boot-common.sh').write_text('register_boot_hook() { :; }\nprepare_rootfs() { :; }\n')
+        (self.base / 'boot-common.sh').write_text('register_boot_hook() { :; }\nprepare_rootfs() { :; }\nacquire_setup_lock() { :; }\nrun_boot_setup() { sh \"$SETUP_SCRIPT\" --boot-once \"$@\"; }\n')
         commands = {
             'git': 'echo "git version 2.44.4"',
             'node': 'echo "${PATCH_RESULT:-unchanged}"',
@@ -46,6 +46,10 @@ class RestartTests(unittest.TestCase):
         self.assertEqual(self.calls.read_text().strip(), '-t ' + str(self.venus))
         self.assertIn('unchanged', (self.base / 'setup.log').read_text())
 
+    def test_boot_preserves_explicit_restart(self):
+        self.assertEqual(self.setup_run('--boot', '--restart').returncode, 0)
+        self.assertTrue(self.calls.exists())
+
     def test_unchanged_boot_does_not_restart(self):
         self.assertEqual(self.setup_run('--boot').returncode, 0)
         self.assertFalse(self.calls.exists())
@@ -57,6 +61,13 @@ class RestartTests(unittest.TestCase):
         result = self.setup_run('--boot', PATCH_RESULT='changed')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls.read_text().strip(), '-t ' + str(legacy))
+
+    def test_restart_is_retried_after_failed_attempt_with_unchanged_files(self):
+        self.assertNotEqual(self.setup_run('--restart', SVC_RESULT='1').returncode, 0)
+        self.assertTrue((self.base / 'restart-pending').exists())
+        self.assertEqual(self.setup_run('--boot').returncode, 0)
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertFalse((self.base / 'restart-pending').exists())
 
     def test_supervisor_failure_is_not_reported_as_success(self):
         self.assertNotEqual(self.setup_run('--restart', SVC_RESULT='1').returncode, 0)
